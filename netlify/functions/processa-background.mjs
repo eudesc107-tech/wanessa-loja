@@ -93,7 +93,7 @@ async function perguntarIA(hist, catalogoTexto) {
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 500,
+      max_tokens: 4000,
       system,
       messages: janela(hist),
     }),
@@ -124,10 +124,16 @@ async function principal(req) {
   const hist = (await historico().get(numero, { type: "json" })) || [];
   hist.push({ role: "user", content: texto });
 
-  const resposta = await perguntarIA(hist, await catalogo());
+  const cat = await catalogo();
+  trilha.push("catalogo: " + cat.slice(0, 120).replace(/\n/g, " | "));
+
+  const resposta = await perguntarIA(hist, cat);
 
   if (!resposta) {
-    await enviarWhatsApp(numero, "Tive um problema tecnico agora. Pode mandar sua mensagem de novo em instantes?");
+    await enviarWhatsApp(
+      numero,
+      "Tive um problema tecnico agora. Pode mandar sua mensagem de novo em instantes?"
+    );
     trilha.push("falha tecnica ao responder");
     return;
   }
