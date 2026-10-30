@@ -4,11 +4,11 @@ import { PROMPT } from "./prompt.mjs";
 const {
   WA_TOKEN,
   WA_PHONE_ID,
-  GEMINI_API_KEY,
-  GEMINI_MODEL = "gemini-2.0-flash",
+  ANTHROPIC_API_KEY,
+  CLAUDE_MODEL = "claude-haiku-5-5",
   NUVEM_STORE_ID,
   NUVEM_TOKEN,
-  NUMERO_DONA, // WhatsApp da dona da loja, so digitos, ex: 5583999999999
+  NUMERO_DONA,
 } = process.env;
 
 const historico = () => getStore("historico");
@@ -30,10 +30,11 @@ async function enviarWhatsApp(para, texto) {
   if (!r.ok) console.error("Erro WhatsApp:", r.status, await r.text());
 }
 
-// Catalogo da Nuvemshop, com cache de 5 minutos
 async function catalogo() {
   const c = await cache().get("catalogo", { type: "json" });
   if (c && Date.now() - c.t < 5 * 60 * 1000) return c.texto;
+
+  if (!NUVEM_STORE_ID || !NUVEM_TOKEN) return "(catalogo ainda nao conectado)";
 
   const r = await fetch(
     `https://api.nuvemshop.com.br/v1/${NUVEM_STORE_ID}/products?published=true&per_page=100`,
@@ -67,32 +68,38 @@ async function catalogo() {
   return texto;
 }
 
+// Pega as ultimas mensagens e garante que a primeira seja da cliente
+function janela(hist) {
+  const h = hist.slice(-20);
+  while (h.length && h[0].role !== "user") h.shift();
+  return h;
+}
+
 async function perguntarIA(hist, catalogoTexto) {
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [
-            {
-              text:
-                PROMPT +
-                "\n\nCATALOGO ATUAL (so ofereca o que esta aqui):\n" +
-                catalogoTexto +
-                "\n\nSe precisar chamar a dona da loja, inclua no fim da resposta exatamente: [CHAMAR_DONA]",
-            },
-          ],
-        },
-        contents: hist,
-      }),
-    }
-  );
+  const system =
+    PROMPT +
+    "\n\nCATALOGO ATUAL (so ofereca o que esta aqui):\n" +
+    catalogoTexto +
+    "\n\nSe precisar chamar a dona da loja, inclua no fim da resposta exatamente: [CHAMAR_DONA]";
+
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 500,
+      system,
+      messages: janela(hist),
+    }),
+  });
   const j = await r.json();
-  if (!r.ok) console.error("Erro Gemini:", r.status, JSON.stringify(j));
+  if (!r.ok) console.error("Erro Claude:", r.status, JSON.stringify(j));
   return (
-    j?.candidates?.[0]?.content?.parts?.[0]?.text ||
+    j?.content?.find((b) => b.type === "text")?.text ||
     "Vou chamar a responsavel para te atender. Um minuto. [CHAMAR_DONA]"
   );
 }
@@ -100,27 +107,25 @@ async function perguntarIA(hist, catalogoTexto) {
 export default async (req) => {
   const data = await req.json().catch(() => null);
   const msg = data?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-  if (!msg || msg.type !== "text") return; // v1: ignora status, audio, imagem
+  if (!msg || msg.type !== "text") return;
 
-  // evita processar a mesma mensagem duas vezes
   if (await vistos().get(msg.id)) return;
   await vistos().set(msg.id, "1");
 
   const numero = msg.from;
   const texto = msg.text.body;
 
-  // se a conversa esta com a dona, a Wanessa fica quieta
   if (await pausados().get(numero)) return;
 
   const hist = (await historico().get(numero, { type: "json" })) || [];
-  hist.push({ role: "user", parts: [{ text: texto }] });
+  hist.push({ role: "user", content: texto });
 
-  let resposta = await perguntarIA(hist.slice(-20), await catalogo());
+  let resposta = await perguntarIA(hist, await catalogo());
 
   const chamar = resposta.includes("[CHAMAR_DONA]");
   resposta = resposta.replace("[CHAMAR_DONA]", "").trim();
 
-  hist.push({ role: "model", parts: [{ text: resposta }] });
+  hist.push({ role: "assistant", content: resposta });
   await historico().setJSON(numero, hist.slice(-20));
 
   await enviarWhatsApp(numero, resposta);
