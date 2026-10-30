@@ -15,6 +15,14 @@ const historico = () => getStore("historico");
 const pausados = () => getStore("pausados");
 const vistos = () => getStore("vistos");
 const cache = () => getStore("cache");
+const debugStore = () => getStore("debug");
+
+const trilha = [];
+const erroOriginal = console.error;
+console.error = (...a) => {
+  erroOriginal(...a);
+  trilha.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
+};
 
 async function enviarWhatsApp(para, texto) {
   const r = await fetch(`https://graph.facebook.com/v21.0/${WA_PHONE_ID}/messages`, {
@@ -68,7 +76,6 @@ async function catalogo() {
   return texto;
 }
 
-// Pega as ultimas mensagens e garante que a primeira seja da cliente
 function janela(hist) {
   const h = hist.slice(-20);
   while (h.length && h[0].role !== "user") h.shift();
@@ -104,10 +111,12 @@ async function perguntarIA(hist, catalogoTexto) {
   );
 }
 
-export default async (req) => {
+async function principal(req) {
   const data = await req.json().catch(() => null);
   const msg = data?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   if (!msg || msg.type !== "text") return;
+
+  trilha.push("mensagem recebida");
 
   if (await vistos().get(msg.id)) return;
   await vistos().set(msg.id, "1");
@@ -115,7 +124,10 @@ export default async (req) => {
   const numero = msg.from;
   const texto = msg.text.body;
 
-  if (await pausados().get(numero)) return;
+  if (await pausados().get(numero)) {
+    trilha.push("conversa pausada (esta com a dona)");
+    return;
+  }
 
   const hist = (await historico().get(numero, { type: "json" })) || [];
   hist.push({ role: "user", content: texto });
@@ -138,5 +150,23 @@ export default async (req) => {
         `Cliente precisa de atendimento: wa.me/${numero}\nUltima mensagem: ${texto}`
       );
     }
+  }
+  trilha.push("fim do processamento");
+}
+
+export default async (req) => {
+  trilha.length = 0;
+  const faltando = ["WA_TOKEN", "WA_PHONE_ID", "ANTHROPIC_API_KEY"].filter((n) => !process.env[n]);
+  if (faltando.length) trilha.push("Variaveis vazias: " + faltando.join(", "));
+  try {
+    await principal(req);
+  } catch (e) {
+    trilha.push("EXCECAO: " + e.message);
+  }
+  if (trilha.length) {
+    await debugStore().set(
+      "ultimo",
+      new Date().toISOString() + "\n" + trilha.join("\n").slice(0, 3000)
+    );
   }
 };
