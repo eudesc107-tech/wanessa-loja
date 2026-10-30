@@ -8,13 +8,9 @@ const {
   CLAUDE_MODEL = "claude-haiku-5-5",
   NUVEM_STORE_ID,
   NUVEM_TOKEN,
-  NUMERO_DONA,
 } = process.env;
 
-const PAUSA_MS = 3 * 60 * 60 * 1000; // pausa expira em 3 horas
-
 const historico = () => getStore("historico");
-const pausados = () => getStore("pausados");
 const vistos = () => getStore("vistos");
 const cache = () => getStore("cache");
 const debugStore = () => getStore("debug");
@@ -86,10 +82,7 @@ function janela(hist) {
 
 async function perguntarIA(hist, catalogoTexto) {
   const system =
-    PROMPT +
-    "\n\nCATALOGO ATUAL (so ofereca o que esta aqui):\n" +
-    catalogoTexto +
-    "\n\nSe precisar chamar a dona da loja, inclua no fim da resposta exatamente: [CHAMAR_DONA]";
+    PROMPT + "\n\nCATALOGO ATUAL (so ofereca o que esta aqui):\n" + catalogoTexto;
 
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -112,7 +105,7 @@ async function perguntarIA(hist, catalogoTexto) {
   if (!texto) {
     console.error("Claude sem texto:", r.status, j?.stop_reason, JSON.stringify(j).slice(0, 400));
   }
-  return texto || "Vou chamar a responsavel para te atender. Um minuto. [CHAMAR_DONA]";
+  return texto || null;
 }
 
 async function principal(req) {
@@ -128,39 +121,22 @@ async function principal(req) {
   const numero = msg.from;
   const texto = msg.text.body;
 
-  const pausa = await pausados().get(numero);
-  if (pausa && Date.now() - Number(pausa) < PAUSA_MS) {
-    trilha.push("conversa pausada (esta com a dona)");
-    return;
-  }
-
   const hist = (await historico().get(numero, { type: "json" })) || [];
   hist.push({ role: "user", content: texto });
 
-  let resposta = await perguntarIA(hist, await catalogo());
+  const resposta = await perguntarIA(hist, await catalogo());
 
-  const chamar = resposta.includes("[CHAMAR_DONA]");
-  resposta = resposta.replace("[CHAMAR_DONA]", "").trim();
-
-  // respostas de escalonamento nao entram no historico
-  if (!chamar) {
-    hist.push({ role: "assistant", content: resposta });
-    await historico().setJSON(numero, hist.slice(-20));
+  if (!resposta) {
+    await enviarWhatsApp(numero, "Tive um problema tecnico agora. Pode mandar sua mensagem de novo em instantes?");
+    trilha.push("falha tecnica ao responder");
+    return;
   }
+
+  hist.push({ role: "assistant", content: resposta });
+  await historico().setJSON(numero, hist.slice(-20));
   trilha.push("resposta: " + resposta.slice(0, 150));
 
   await enviarWhatsApp(numero, resposta);
-
-  if (chamar) {
-    await pausados().set(numero, String(Date.now()));
-    if (NUMERO_DONA) {
-      await enviarWhatsApp(
-        NUMERO_DONA,
-        `Cliente precisa de atendimento: wa.me/${numero}\nUltima mensagem: ${texto}`
-      );
-    }
-    trilha.push("chamou a dona");
-  }
   trilha.push("fim do processamento");
 }
 
