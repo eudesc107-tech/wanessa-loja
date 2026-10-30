@@ -107,10 +107,12 @@ async function perguntarIA(hist, catalogoTexto) {
   });
   const j = await r.json();
   if (!r.ok) console.error("Erro Claude:", r.status, JSON.stringify(j));
-  return (
-    j?.content?.find((b) => b.type === "text")?.text ||
-    "Vou chamar a responsavel para te atender. Um minuto. [CHAMAR_DONA]"
-  );
+
+  const texto = j?.content?.find((b) => b.type === "text")?.text;
+  if (!texto) {
+    console.error("Claude sem texto:", r.status, j?.stop_reason, JSON.stringify(j).slice(0, 400));
+  }
+  return texto || "Vou chamar a responsavel para te atender. Um minuto. [CHAMAR_DONA]";
 }
 
 async function principal(req) {
@@ -140,8 +142,12 @@ async function principal(req) {
   const chamar = resposta.includes("[CHAMAR_DONA]");
   resposta = resposta.replace("[CHAMAR_DONA]", "").trim();
 
-  hist.push({ role: "assistant", content: resposta });
-  await historico().setJSON(numero, hist.slice(-20));
+  // respostas de escalonamento nao entram no historico
+  if (!chamar) {
+    hist.push({ role: "assistant", content: resposta });
+    await historico().setJSON(numero, hist.slice(-20));
+  }
+  trilha.push("resposta: " + resposta.slice(0, 150));
 
   await enviarWhatsApp(numero, resposta);
 
