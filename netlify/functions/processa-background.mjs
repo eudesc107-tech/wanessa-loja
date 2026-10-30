@@ -11,6 +11,8 @@ const {
   NUMERO_DONA,
 } = process.env;
 
+const PAUSA_MS = 3 * 60 * 60 * 1000; // pausa expira em 3 horas
+
 const historico = () => getStore("historico");
 const pausados = () => getStore("pausados");
 const vistos = () => getStore("vistos");
@@ -124,7 +126,8 @@ async function principal(req) {
   const numero = msg.from;
   const texto = msg.text.body;
 
-  if (await pausados().get(numero)) {
+  const pausa = await pausados().get(numero);
+  if (pausa && Date.now() - Number(pausa) < PAUSA_MS) {
     trilha.push("conversa pausada (esta com a dona)");
     return;
   }
@@ -143,13 +146,14 @@ async function principal(req) {
   await enviarWhatsApp(numero, resposta);
 
   if (chamar) {
-    await pausados().set(numero, "1");
+    await pausados().set(numero, String(Date.now()));
     if (NUMERO_DONA) {
       await enviarWhatsApp(
         NUMERO_DONA,
         `Cliente precisa de atendimento: wa.me/${numero}\nUltima mensagem: ${texto}`
       );
     }
+    trilha.push("chamou a dona");
   }
   trilha.push("fim do processamento");
 }
