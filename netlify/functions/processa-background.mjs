@@ -41,6 +41,30 @@ async function enviarWhatsApp(para, texto) {
   if (!r.ok) console.error("Erro WhatsApp:", r.status, await r.text());
 }
 
+async function baixarMidia(mediaId) {
+  const r1 = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${WA_TOKEN}` },
+  });
+  if (!r1.ok) {
+    console.error("Erro midia (url):", r1.status, await r1.text());
+    return null;
+  }
+  const meta = await r1.json();
+  const r2 = await fetch(meta.url, { headers: { Authorization: `Bearer ${WA_TOKEN}` } });
+  if (!r2.ok) {
+    console.error("Erro midia (download):", r2.status);
+    return null;
+  }
+  const buf = Buffer.from(await r2.arrayBuffer());
+  if (buf.length > 3.5 * 1024 * 1024) {
+    console.error("Foto grande demais:", buf.length);
+    return null;
+  }
+  let tipo = (meta.mime_type || "image/jpeg").split(";")[0];
+  if (!["image/jpeg", "image/png", "image/webp", "image/gif"].includes(tipo)) tipo = "image/jpeg";
+  return { tipo, base64: buf.toString("base64") };
+}
+
 async function fichaLer(telefone) {
   if (!SHEET_URL) return null;
   try {
@@ -99,9 +123,8 @@ async function catalogo() {
       const v0 = disponiveis[0];
       const regular = Number(v0.price);
       const promo = v0.promotional_price ? Number(v0.promotional_price) : null;
-      const preco = promo && promo < regular
-        ? `de ${brl(regular)} por ${brl(promo)}`
-        : brl(regular);
+      const preco =
+        promo && promo < regular ? `de ${brl(regular)} por ${brl(promo)}` : brl(regular);
 
       const opcoes = disponiveis
         .map((v) => {
@@ -117,7 +140,9 @@ async function catalogo() {
         .trim()
         .slice(0, 180);
 
-      return `- ${p.name?.pt} | ${preco} | opções: ${opcoes} | ${p.canonical_url}${desc ? " | descrição: " + desc : ""}`;
+      return `- ${p.name?.pt} | ${preco} | opções: ${opcoes} | ${p.canonical_url}${
+        desc ? " | descrição: " + desc : ""
+      }`;
     })
     .join("\n");
 
@@ -131,7 +156,12 @@ function janela(hist) {
   return h;
 }
 
-async function perguntarIA(hist, catalogoTexto, ficha) {
+const REGRAS_FOTO = `
+
+QUANDO A CLIENTE MANDA UMA FOTO
+Olhe a foto e perceba cor, tipo de peca e detalhes que realmente aparecem (por exemplo renda, alcas, cor). Procure no catalogo a peca que mais combina e diga com naturalidade, por exemplo "Parece com a ... aqui da loja". So diga que e a mesma peca se nome e cor baterem claramente. Se nao achar nada igual, diga isso em uma frase e ofereca a mais parecida. Se ela perguntar de tamanho, confira no catalogo o estoque daquele tamanho na peca encontrada. Fale so da peca, nunca descreva pessoas nem o corpo de ninguem. Se a foto nao for de uma peca, responda normalmente sem descrever a imagem.`;
+
+async function perguntarIA(hist, catalogoTexto, ficha, imagem, legenda) {
   const fichaTexto = ficha
     ? `FICHA DESTA CLIENTE (ja conversou antes): nome ${ficha.nome || "nao informado"}, status ${ficha.status || "em conversa"}, primeira compra ${ficha.primeira_compra || "nao informado"}, interesse ${ficha.interesse || "nao informado"}, ultima conversa ${ficha.ultima || "nao informado"}.`
     : "FICHA DESTA CLIENTE: cliente nova, sem registro.";
@@ -141,7 +171,17 @@ async function perguntarIA(hist, catalogoTexto, ficha) {
     "\n\nCATALOGO ATUAL (so use o que esta aqui):\n" +
     catalogoTexto +
     "\n\n" +
-    fichaTexto;
+    fichaTexto +
+    (imagem ? REGRAS_FOTO : "");
+
+  // copia as mensagens para nunca gravar a foto no historico
+  const msgs = janela(hist).map((m) => ({ ...m }));
+  if (imagem && msgs.length) {
+    msgs[msgs.length - 1].content = [
+      { type: "image", source: { type: "base64", media_type: imagem.tipo, data: imagem.base64 } },
+      { type: "text", text: legenda || "A cliente enviou esta foto de uma peca." },
+    ];
+  }
 
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -154,7 +194,7 @@ async function perguntarIA(hist, catalogoTexto, ficha) {
       model: CLAUDE_MODEL,
       max_tokens: 4000,
       system,
-      messages: janela(hist),
+      messages: msgs,
     }),
   });
   const j = await r.json();
@@ -189,15 +229,42 @@ function partes(texto) {
 async function principal(req) {
   const data = await req.json().catch(() => null);
   const msg = data?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-  if (!msg || msg.type !== "text") return;
+  if (!msg) return;
 
-  trilha.push("mensagem recebida");
+  trilha.push("mensagem recebida (" + msg.type + ")");
 
   if (await vistos().get(msg.id)) return;
   await vistos().set(msg.id, "1");
 
   const numero = msg.from;
-  const texto = msg.text.body;
+
+  if (msg.type === "audio") {
+    await enviarWhatsApp(numero, "Não consegui ouvir seu áudio por aqui. Pode me escrever?");
+    trilha.push("audio: pediu para escrever");
+    return;
+  }
+  if (msg.type !== "text" && msg.type !== "image") return;
+
+  let texto = "";
+  let legenda = "";
+  let imagem = null;
+
+  if (msg.type === "image") {
+    legenda = msg.image?.caption || "";
+    imagem = await baixarMidia(msg.image.id);
+    if (!imagem) {
+      await enviarWhatsApp(
+        numero,
+        "Não consegui abrir sua foto. Pode mandar de novo ou me dizer o nome da peça?"
+      );
+      trilha.push("falha ao baixar foto");
+      return;
+    }
+    texto = legenda ? `[foto] ${legenda}` : "[foto enviada]";
+    trilha.push("foto recebida, legenda: " + (legenda || "(sem legenda)"));
+  } else {
+    texto = msg.text.body;
+  }
 
   const hist = (await historico().get(numero, { type: "json" })) || [];
   hist.push({ role: "user", content: texto });
@@ -207,8 +274,14 @@ async function principal(req) {
 
   const cat = await catalogo();
   trilha.push("catalogo: " + cat.slice(0, 120).replace(/\n/g, " | "));
+  trilha.push(
+    "com descricao: " +
+      cat.split("\n").filter((l) => l.includes("descrição:")).length +
+      " de " +
+      cat.split("\n").length
+  );
 
-  const bruto = await perguntarIA(hist, cat, ficha);
+  const bruto = await perguntarIA(hist, cat, ficha, imagem, legenda);
   if (!bruto) {
     await enviarWhatsApp(numero, "Deu um probleminha aqui. Pode me mandar de novo?");
     trilha.push("falha tecnica ao responder");
