@@ -40,7 +40,7 @@ export default async (req) => {
 
     if (saude === "corrigir") {
       out +=
-        "1) ASSINAR APP NA CONTA:\n" +
+        "ASSINAR APP NA CONTA:\n" +
         (await chamar(`${G}/${WABA}/subscribed_apps`, {
           method: "POST",
           headers: hj,
@@ -49,15 +49,21 @@ export default async (req) => {
             verify_token: process.env.VERIFY_TOKEN,
           }),
         })) +
-        "\n\n2) GRAVAR ENDERECO NO NUMERO:\n" +
-        (await chamar(`${G}/${id}`, {
+        "\n\n";
+    }
+
+    if (saude === "enviar") {
+      const para = url.searchParams.get("para") || "";
+      out +=
+        "ENVIO DE TESTE PARA " + para + ":\n" +
+        (await chamar(`${G}/${id}/messages`, {
           method: "POST",
           headers: hj,
           body: JSON.stringify({
-            webhook_configuration: {
-              override_callback_uri: MEU_ENDERECO,
-              verify_token: process.env.VERIFY_TOKEN,
-            },
+            messaging_product: "whatsapp",
+            to: para,
+            type: "template",
+            template: { name: "hello_world", language: { code: "en_US" } },
           }),
         })) +
         "\n\n";
