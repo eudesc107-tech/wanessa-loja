@@ -47,7 +47,11 @@ export default async (req) => {
         "ASSINANDO O APP NA CONTA:\n" +
         (await chamar(`https://graph.facebook.com/v21.0/${WABA}/subscribed_apps`, {
           method: "POST",
-          headers: h,
+          headers: { ...h, "content-type": "application/json" },
+          body: JSON.stringify({
+            override_callback_uri: "https://shimmering-mousse-b5f43f.netlify.app/webhook",
+            verify_token: process.env.VERIFY_TOKEN,
+          }),
         })) +
         "\n\n";
     }
