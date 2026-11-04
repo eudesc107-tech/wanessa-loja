@@ -10,7 +10,7 @@ const {
   NUVEM_TOKEN,
   SHEET_URL,
   SHEET_SECRET,
-  ESPERA_MS = "6000",
+  ESPERA_MS = "20000",
 } = process.env;
 
 const historico = () => getStore("historico");
@@ -45,7 +45,7 @@ async function enviarWhatsApp(para, texto) {
 }
 
 // marca como lida e mostra "digitando..." (se a Meta recusar, ignora)
-async function lidoEDigitando(msgId) {
+async function sinalizar(msgId) {
   try {
     await fetch(`https://graph.facebook.com/v21.0/${WA_PHONE_ID}/messages`, {
       method: "POST",
@@ -265,9 +265,7 @@ async function principal(req) {
   const numero = msg.from;
   const agora = Date.now();
 
-  lidoEDigitando(msg.id);
-
-  // 1) coloca a mensagem na fila
+  // 1) coloca a mensagem na fila (sem marcar como lida ainda)
   const idCurto = String(msg.id).replace(/[^A-Za-z0-9]/g, "").slice(-10);
   const chave = `${numero}_${String(agora).padStart(13, "0")}_${idCurto}`;
   await fila().setJSON(chave, {
@@ -278,8 +276,8 @@ async function principal(req) {
     imagemId: msg.image?.id || null,
   });
 
-  // 2) espera um pouco para ver se chegam mais mensagens
-  await espera(Number(ESPERA_MS) || 6000);
+  // 2) espera para ver se chegam mais mensagens
+  await espera(Number(ESPERA_MS) || 20000);
 
   // 3) so a ULTIMA mensagem da fila continua; as outras desistem
   const { blobs } = await fila().list({ prefix: numero + "_" });
@@ -289,7 +287,10 @@ async function principal(req) {
     return;
   }
 
-  // 4) le tudo e esvazia a fila
+  // 4) agora sim: marca como lida e comeca a "digitar"
+  await sinalizar(msg.id);
+
+  // 5) le tudo e esvazia a fila
   const itens = [];
   for (const k of chaves) {
     const v = await fila().get(k, { type: "json" });
@@ -347,7 +348,10 @@ async function principal(req) {
   const blocos = partes(resposta);
   await espera(600);
   for (let i = 0; i < blocos.length; i++) {
-    if (i > 0) await espera(Math.min(2500, 800 + blocos[i].length * 20));
+    if (i > 0) {
+      await sinalizar(msg.id);
+      await espera(Math.min(2500, 800 + blocos[i].length * 20));
+    }
     await enviarWhatsApp(numero, blocos[i]);
   }
 
