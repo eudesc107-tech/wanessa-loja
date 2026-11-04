@@ -1,7 +1,8 @@
+import { getStore } from "@netlify/blobs";
+
 export default async (req) => {
   const url = new URL(req.url);
 
-  // Verificacao do webhook (GET)
   if (req.method === "GET") {
     const ok =
       url.searchParams.get("hub.mode") === "subscribe" &&
@@ -11,17 +12,25 @@ export default async (req) => {
       : new Response("Forbidden", { status: 403 });
   }
 
-  // Mensagens (POST): dispara a funcao background e responde 200 rapido
   const body = await req.text();
+  let status = "";
   try {
-    await fetch(`${url.origin}/.netlify/functions/processa-background`, {
+    const r = await fetch(`${url.origin}/.netlify/functions/processa-background`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
     });
+    status = "background respondeu " + r.status;
   } catch (e) {
-    console.error("Erro ao chamar background:", e);
+    status = "background falhou: " + e.message;
   }
+
+  try {
+    await getStore("debug").set(
+      "webhook",
+      new Date().toISOString() + "\n" + status + "\n" + body.slice(0, 800)
+    );
+  } catch (e) {}
 
   return new Response("ok", { status: 200 });
 };
