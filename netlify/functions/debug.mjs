@@ -4,11 +4,11 @@ const WABA = "1839792817160030";
 const G = "https://graph.facebook.com/v21.0";
 const MEU_ENDERECO = "https://shimmering-mousse-b5f43f.netlify.app/webhook";
 
-async function chamar(url, opts) {
+async function chamar(url, opts, max = 600) {
   try {
     const r = await fetch(url, opts);
     const t = await r.text();
-    return r.status + " " + t.slice(0, 600);
+    return r.status + " " + t.slice(0, max);
   } catch (e) {
     return "falhou: " + e.message;
   }
@@ -37,6 +37,25 @@ export default async (req) => {
     const hj = { ...h, "content-type": "application/json" };
     let out = "SAUDE\nWA_PHONE_ID: " + id + "\n";
     out += "token: " + (tk ? tk.length + " caracteres, comeca com " + tk.slice(0, 3) : "NAO EXISTE") + "\n\n";
+
+    if (saude === "token") {
+      out +=
+        "DEBUG_TOKEN:\n" +
+        (await chamar(`${G}/debug_token?input_token=${tk}&access_token=${tk}`, {}, 1800)) +
+        "\n\nPERMISSOES (me/permissions):\n" +
+        (await chamar(`${G}/me/permissions`, { headers: h }, 800)) +
+        "\n\nSAUDE DO NUMERO (health_status):\n" +
+        (await chamar(`${G}/${id}?fields=health_status`, { headers: h }, 1500)) +
+        "\n\nSAUDE DA CONTA (health_status):\n" +
+        (await chamar(`${G}/${WABA}?fields=health_status`, { headers: h }, 1500)) +
+        "\n\nCONTA (verificacao e revisao):\n" +
+        (await chamar(
+          `${G}/${WABA}?fields=name,account_review_status,business_verification_status,currency`,
+          { headers: h },
+          800
+        ));
+      return txt(out);
+    }
 
     if (saude === "corrigir") {
       out +=
@@ -72,8 +91,6 @@ export default async (req) => {
     out +=
       "NUMERO:\n" +
       (await chamar(`${G}/${id}?fields=display_phone_number,verified_name,quality_rating`, { headers: h })) +
-      "\n\nNUMERO (detalhes):\n" +
-      (await chamar(`${G}/${id}?fields=status,platform_type,account_mode,webhook_configuration`, { headers: h })) +
       "\n\nAPPS NA CONTA:\n" +
       (await chamar(`${G}/${WABA}/subscribed_apps`, { headers: h }));
     return txt(out);
