@@ -1,12 +1,14 @@
 import { getStore } from "@netlify/blobs";
 
 const WABA = "1839792817160030";
+const G = "https://graph.facebook.com/v21.0";
+const MEU_ENDERECO = "https://shimmering-mousse-b5f43f.netlify.app/webhook";
 
 async function chamar(url, opts) {
   try {
     const r = await fetch(url, opts);
     const t = await r.text();
-    return r.status + " " + t.slice(0, 400);
+    return r.status + " " + t.slice(0, 600);
   } catch (e) {
     return "falhou: " + e.message;
   }
@@ -32,39 +34,54 @@ export default async (req) => {
     const tk = process.env.WA_TOKEN || "";
     const id = process.env.WA_PHONE_ID || "";
     const h = { Authorization: `Bearer ${tk}` };
-    let out = "SAUDE\n";
-    out += "WA_PHONE_ID: " + id + "\n";
+    const hj = { ...h, "content-type": "application/json" };
+    let out = "SAUDE\nWA_PHONE_ID: " + id + "\n";
     out += "token: " + (tk ? tk.length + " caracteres, comeca com " + tk.slice(0, 3) : "NAO EXISTE") + "\n\n";
-    out +=
-      "NUMERO:\n" +
-      (await chamar(
-        `https://graph.facebook.com/v21.0/${id}?fields=display_phone_number,verified_name,quality_rating`,
-        { headers: h }
-      )) +
-      "\n\n";
-    if (saude === "assinar") {
+
+    if (saude === "corrigir") {
       out +=
-        "ASSINANDO O APP NA CONTA:\n" +
-        (await chamar(`https://graph.facebook.com/v21.0/${WABA}/subscribed_apps`, {
+        "1) ASSINAR APP NA CONTA:\n" +
+        (await chamar(`${G}/${WABA}/subscribed_apps`, {
           method: "POST",
-          headers: { ...h, "content-type": "application/json" },
+          headers: hj,
           body: JSON.stringify({
-            override_callback_uri: "https://shimmering-mousse-b5f43f.netlify.app/webhook",
+            override_callback_uri: MEU_ENDERECO,
             verify_token: process.env.VERIFY_TOKEN,
+          }),
+        })) +
+        "\n\n2) GRAVAR ENDERECO NO NUMERO:\n" +
+        (await chamar(`${G}/${id}`, {
+          method: "POST",
+          headers: hj,
+          body: JSON.stringify({
+            webhook_configuration: {
+              override_callback_uri: MEU_ENDERECO,
+              verify_token: process.env.VERIFY_TOKEN,
+            },
           }),
         })) +
         "\n\n";
     }
+
     out +=
-      "APPS ASSINADOS NA CONTA:\n" +
-      (await chamar(`https://graph.facebook.com/v21.0/${WABA}/subscribed_apps`, { headers: h }));
+      "NUMERO:\n" +
+      (await chamar(`${G}/${id}?fields=display_phone_number,verified_name,quality_rating`, { headers: h })) +
+      "\n\nNUMERO (detalhes):\n" +
+      (await chamar(`${G}/${id}?fields=status,platform_type,account_mode,webhook_configuration`, { headers: h })) +
+      "\n\nAPPS NA CONTA:\n" +
+      (await chamar(`${G}/${WABA}/subscribed_apps`, { headers: h }));
     return txt(out);
   }
 
   const s = getStore("debug");
-  const w = (await s.get("webhook")) || "webhook: nada recebido";
+  const log = (await s.get("log", { type: "json" })) || [];
   const u = (await s.get("ultimo")) || "processamento: nada registrado";
-  return txt("WEBHOOK\n" + w + "\n\nPROCESSAMENTO\n" + u);
+  return txt(
+    "EVENTOS RECEBIDOS (mais novo primeiro)\n" +
+      (log.length ? log.join("\n") : "nenhum") +
+      "\n\nPROCESSAMENTO\n" +
+      u
+  );
 };
 
 export const config = { path: "/debug" };
